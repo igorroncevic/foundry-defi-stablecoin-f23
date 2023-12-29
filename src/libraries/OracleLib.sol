@@ -15,6 +15,8 @@ import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/Ag
 library OracleLib {
     error OracleLib__StalePrice();
 
+    // if last update price is older than TIMEOUT, the price is considered stale
+    // this is set by the oracle network provider (https://data.chain.link/)
     uint256 private constant TIMEOUT = 3 hours;
 
     function staleCheckLatestRoundData(AggregatorV3Interface chainlinkFeed)
