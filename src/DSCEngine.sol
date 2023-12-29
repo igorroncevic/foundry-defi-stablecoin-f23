@@ -84,6 +84,7 @@ contract DSCEngine is ReentrancyGuard {
     //    Events     //
     ///////////////////
     event CollateralDeposited(address indexed user, address indexed token, uint256 indexed amount);
+    event CollateralRedeemed(address indexed user, address indexed token, uint256 indexed amount);
 
     ///////////////////
     //   Modifiers   //
@@ -122,7 +123,18 @@ contract DSCEngine is ReentrancyGuard {
     //  External Functions   //
     ///////////////////////////
 
-    function depositCollateralAndMintDsc() external {}
+    /**
+     * @param tokenCollateralAddress: The ERC20 token address of the collateral you're depositing
+     * @param amountCollateral: The amount of collateral you're depositing
+     * @param amountDscToMint: The amount of DSC you want to mint
+     * @notice This function will deposit your collateral and mint DSC in one transaction
+     */
+    function depositCollateralAndMintDsc(address tokenCollateralAddress, uint256 amountCollateral, uint256 amountDsc)
+        public
+    {
+        depositCollateral(tokenCollateralAddress, amountCollateral);
+        mintDsc(amountDsc);
+    }
 
     /**
      * @notice follows CEI
@@ -144,9 +156,41 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
-    function redeemCollateralForDsc() external {}
+    /**
+     * @param tokenCollateralAddress: The ERC20 token address of the collateral you're depositing
+     * @param amountCollateral: The amount of collateral you're depositing
+     * @param amountDscToBurn: The amount of DSC you want to burn
+     * @notice This function will withdraw your collateral and burn DSC in one transaction
+     */
+    function redeemCollateralForDsc(address tokenCollateralAddress, uint256 amountCollateral, uint256 amountDscToBurn)
+        external
+    {
+        burnDsc(amountDscToBurn);
+        redeemCollateral(tokenCollateralAddress, amountCollateral); // already checks health factor
+    }
 
-    function redeemCollateral() external {}
+    /**
+     * @param tokenCollateralAddress: The ERC20 token address of the collateral you're redeeming
+     * @param amountCollateral: The amount of collateral you're redeeming
+     * @notice This function will redeem your collateral.
+     * @notice If you have DSC minted, you will not be able to redeem until you burn your DSC
+     * @notice User's health factor must be greater than 1.
+     */
+    function redeemCollateral(address tokenCollateralAddress, uint256 amountCollateral)
+        public
+        moreThanZero(amountCollateral)
+        nonReentrant
+    {
+        s_collateralDeposited[msg.sender][tokenCollateralAddress] -= amountCollateral;
+        emit CollateralRedeemed(msg.sender, amountCollateral, tokenCollateralAddress);
+
+        bool success = IERC20(tokenCollateralAddress).transfer(msg.sender, amountCollateral);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
 
     /**
      * @param amountDscToMint: The amount of DSC you want to mint
@@ -163,7 +207,16 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
-    function burnDsc() external {}
+    function burnDsc(uint256 amount) public moreThanZero(amount) {
+        s_DSCMinted[msg.sender] -= amount;
+
+        bool success = i_dsc.transferFrom(msg.sender, address(this), amount);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+        i_dsc.burn(amount);
+        _revertIfHealthFactorIsBroken(msg.sender); // probably not needed, because removing debt improves health factor, rather than breaking it.
+    }
 
     function liquidate() external {}
 
@@ -209,15 +262,19 @@ contract DSCEngine is ReentrancyGuard {
     {
         if (totalDscMinted == 0) return type(uint256).max;
 
-        // LIQUIDATION_THRESHOLD = 50
-        // LIQUIDATION_PRECISION = 100
-        //
-        // usdValue * (50 / 100) --> collateral must be at least 200% of the value
-        // therefore, ```value/collateral = 1/2``` === ```collateral = 2 * value```
-        // example:
-        // - $150 of ETH * 50 = 7500
-        // - 7500 / 100 = 75
-        // --> for $150 of ETH you get $75 of stablecoin
+        /**
+         * health_factor = (collateral_in_eth * liquidation_threshold) / total_borrows_in_eth
+         *
+         * LIQUIDATION_THRESHOLD = 50
+         * LIQUIDATION_PRECISION = 100
+         *
+         * usdValue * (50 / 100) --> collateral must be at least 200% of the value
+         * therefore, ```value/collateral = 1/2``` === ```collateral = 2 * value```
+         * example:
+         * - $150 of ETH * 50 = 7500
+         * - 7500 / 100 = 75
+         * --> for $150 of ETH you get $75 of stablecoin
+         */
         uint256 collateralAdjustedForThreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
         return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
     }
